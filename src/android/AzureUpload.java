@@ -1,180 +1,153 @@
-package com.azure.upload;
+package com.karamsawalha.arabicschool;
 
-import android.Manifest;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.os.Build;
+import android.os.IBinder;
+import android.util.Base64;
 import android.util.Log;
-import androidx.core.app.ActivityCompat;
+
+import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
-import androidx.core.content.ContextCompat;
-import org.apache.cordova.*;
+import androidx.core.app.NotificationManagerCompat;
+
+import org.apache.cordova.CallbackContext;
+import org.apache.cordova.CordovaPlugin;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
-import java.io.*;
-import java.net.*;
-import javax.net.ssl.HttpsURLConnection;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 
 public class AzureUpload extends CordovaPlugin {
 
-    private static final String CHANNEL_ID = "AzureUploadChannel";
-    private static final int PERMISSION_REQUEST_CODE = 1001;
-    private CallbackContext callbackContext;
-    private JSONArray fileList;
-    private String sasToken;
-    private String postId;
+    private static final String CHANNEL_ID = "upload_channel";
+    private static final int NOTIFICATION_ID = 1;
+    private static final int CHUNK_SIZE = 1024 * 1024; // 1MB
+    private static final String BASE_URL = "https://arabicschool.blob.core.windows.net/arabicschool";
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
-        this.callbackContext = callbackContext;
         if (action.equals("uploadFiles")) {
-            this.fileList = args.getJSONArray(0);
-            this.sasToken = args.getString(1);
-            this.postId = args.getString(2);
-
-            if (!hasPermissions()) {
-                requestPermissions();
-            } else {
-                startUpload();
-            }
+            JSONArray fileList = args.getJSONArray(0);
+            String sasToken = args.getString(1);
+            String postId = args.getString(2);
+            uploadFiles(fileList, sasToken, postId, callbackContext);
             return true;
         }
         return false;
     }
 
-    private boolean hasPermissions() {
-        return ContextCompat.checkSelfPermission(cordova.getActivity(), Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(cordova.getActivity(), Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(cordova.getActivity(), Manifest.permission.FOREGROUND_SERVICE) == PackageManager.PERMISSION_GRANTED;
-    }
+    private void uploadFiles(JSONArray fileList, String sasToken, String postId, CallbackContext callbackContext) {
+        final int totalFiles = fileList.length();
+        final ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(4);
 
-    private void requestPermissions() {
-        ActivityCompat.requestPermissions(cordova.getActivity(), new String[]{
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                Manifest.permission.FOREGROUND_SERVICE
-        }, PERMISSION_REQUEST_CODE);
-    }
+        for (int i = 0; i < totalFiles; i++) {
+            try {
+                JSONObject file = fileList.getJSONObject(i);
+                String destination = file.getString("destination"); // Get the destination path
+                String fileName = file.getString("filename");
+                String fileMime = file.getString("filemime");
+                String fileBinaryString = file.getString("filebinary");
+                byte[] fileBinary = Base64.decode(fileBinaryString, Base64.DEFAULT);
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) throws JSONException {
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startUpload();
-            } else {
-                callbackContext.error("Permission denied.");
-            }
-        }
-    }
+                String filePath = BASE_URL + destination;
 
-    private void startUpload() {
-        try {
-            cordova.getActivity().startService(new Intent(cordova.getActivity(), UploadService.class));
-            uploadFiles();
-        } catch (Exception e) {
-            callbackContext.error("Upload failed: " + e.getMessage());
-        }
-    }
-
-    private void uploadFiles() throws JSONException, IOException {
-        for (int i = 0; i < fileList.length(); i++) {
-            JSONObject file = fileList.getJSONObject(i);
-            String fileName = file.getString("filename");
-            String fileMime = file.getString("filemime");
-            byte[] fileBinary = file.getString("filebinary").getBytes();
-
-            // Upload each file in chunks
-            boolean uploadSuccess = uploadChunked(fileName, fileMime, fileBinary, sasToken, i + 1, fileList.length());
-            if (!uploadSuccess) {
-                callbackContext.error("Failed to upload file: " + fileName);
-                stopForegroundService();
+                executor.execute(() -> uploadFile(filePath, fileName, fileBinary, sasToken, i + 1, totalFiles, postId, callbackContext));
+            } catch (JSONException e) {
+                callbackContext.error("Error parsing file data");
                 return;
             }
         }
 
-        // All files uploaded successfully, call completion API
-        callCompletionAPI(postId);
-        stopForegroundService();
+        executor.shutdown();
     }
 
-    private boolean uploadChunked(String fileName, String fileMime, byte[] fileBinary, String sasToken, int fileIndex, int totalFiles) throws IOException {
-        int chunkSize = 1024 * 1024; // 1MB
+    private void uploadFile(String filePath, String fileName, byte[] fileBinary, String sasToken, int fileIndex, int totalFiles, String postId, CallbackContext callbackContext) {
         int totalSize = fileBinary.length;
-        int numChunks = (int) Math.ceil((double) totalSize / chunkSize);
-        int uploadedChunks = 0;
+        int numChunks = (int) Math.ceil((double) totalSize / CHUNK_SIZE);
+        int[] uploadedChunks = {0};
 
         for (int i = 0; i < numChunks; i++) {
-            int start = i * chunkSize;
-            int end = Math.min(start + chunkSize, totalSize);
+            int start = i * CHUNK_SIZE;
+            int end = Math.min(start + CHUNK_SIZE, totalSize);
             byte[] chunk = new byte[end - start];
-            System.arraycopy(fileBinary, start, chunk, 0, chunk.length);
+            System.arraycopy(fileBinary, start, chunk, 0, end - start);
 
-            URL url = new URL("https://yourazureblobstorageurl/" + fileName + "?sv=" + sasToken);
-            HttpsURLConnection connection = (HttpsURLConnection) url.openConnection();
+            uploadChunk(filePath, chunk, sasToken, fileIndex, totalFiles, uploadedChunks, numChunks, postId, callbackContext);
+        }
+    }
+
+    private void uploadChunk(String filePath, byte[] chunk, String sasToken, int fileIndex, int totalFiles, int[] uploadedChunks, int numChunks, String postId, CallbackContext callbackContext) {
+        try {
+            URL url = new URL(filePath + "?sv=" + sasToken);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setDoOutput(true);
             connection.setRequestMethod("PUT");
             connection.setRequestProperty("x-ms-blob-type", "BlockBlob");
-            connection.setDoOutput(true);
 
-            try (OutputStream os = connection.getOutputStream()) {
-                os.write(chunk);
-            }
+            OutputStream outputStream = connection.getOutputStream();
+            outputStream.write(chunk);
+            outputStream.close();
 
             int responseCode = connection.getResponseCode();
-            if (responseCode != 201) {
-                Log.e("AzureUpload", "Failed to upload chunk: " + responseCode);
-                return false;
-            }
+            if (responseCode == 201) {
+                uploadedChunks[0]++;
+                int progress = (int) ((double) uploadedChunks[0] / numChunks * 100);
+                updateNotification(fileIndex, totalFiles, progress);
 
-            // Update upload progress in the notification
-            uploadedChunks++;
-            int progress = (int) (((float) uploadedChunks / numChunks) * 100);
-            updateNotificationProgress(fileIndex, totalFiles, progress);
+                if (uploadedChunks[0] == numChunks) {
+                    callCompletionAPI(postId, callbackContext);
+                }
+            } else {
+                Log.e("AzureUpload", "Failed to upload chunk: " + responseCode);
+            }
+        } catch (IOException e) {
+            Log.e("AzureUpload", "Error uploading chunk", e);
         }
-        return true;
     }
 
-    private void updateNotificationProgress(int fileIndex, int totalFiles, int progress) {
-        NotificationManager notificationManager = (NotificationManager) cordova.getActivity().getSystemService(Context.NOTIFICATION_SERVICE);
+    private void updateNotification(int fileIndex, int totalFiles, int progress) {
+        Context context = cordova.getActivity().getApplicationContext();
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Upload Channel", NotificationManager.IMPORTANCE_LOW);
-            notificationManager.createNotificationChannel(channel);
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Upload Progress", NotificationManager.IMPORTANCE_LOW);
+            NotificationManager manager = context.getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(channel);
         }
 
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(cordova.getActivity(), CHANNEL_ID)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_menu_upload)
                 .setContentTitle("Uploading File " + fileIndex + " of " + totalFiles)
                 .setContentText("Upload progress: " + progress + "%")
-                .setSmallIcon(android.R.drawable.stat_sys_upload)
-                .setProgress(100, progress, false)
-                .setOngoing(true);
+                .setPriority(NotificationCompat.PRIORITY_LOW);
 
-        notificationManager.notify(1, builder.build());
+        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build());
     }
 
-    private void stopForegroundService() {
-        NotificationManager notificationManager = (NotificationManager) cordova.getActivity().getSystemService(Context.NOTIFICATION_SERVICE);
-        notificationManager.cancel(1);
-    }
-
-    private void callCompletionAPI(String postId) {
-        String apiUrl = "https://personal-fjlz3d21.outsystemscloud.com/arabicschooln/rest/post/completed?id=" + postId;
+    private void callCompletionAPI(String postId, CallbackContext callbackContext) {
         try {
-            URL url = new URL(apiUrl);
-            HttpsURLConnection connection = (HttpsURLConnection) url.openConnection();
+            URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/arabicschooln/rest/post/completed?id=" + postId);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("GET");
-            int responseCode = connection.getResponseCode();
 
+            int responseCode = connection.getResponseCode();
             if (responseCode == 200) {
                 callbackContext.success("All files uploaded and completion API called successfully.");
             } else {
                 callbackContext.error("API call failed with response code: " + responseCode);
             }
-
-        } catch (Exception e) {
-            callbackContext.error("Error calling completion API: " + e.getMessage());
+        } catch (IOException e) {
+            callbackContext.error("Error calling completion API");
         }
     }
 }
