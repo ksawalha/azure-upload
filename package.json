@@ -1,0 +1,20 @@
+{
+  "name": "cordova-azure-upload-plugin",
+  "version": "1.0.0",
+  "description": "Cordova Plugin for Azure Chunked File Upload",
+  "cordova": {
+    "id": "cordova-azure-upload-plugin",
+    "platforms": [
+      "android",
+      "ios"
+    ]
+  },
+  "keywords": [
+    "cordova",
+    "azure",
+    "upload",
+    "file-upload"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
