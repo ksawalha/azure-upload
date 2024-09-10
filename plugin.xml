@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin id="cordova-azure-upload-plugin" version="1.0.0" xmlns="http://apache.org/cordova/ns/plugins/1.0" xmlns:android="http://schemas.android.com/apk/res/android">
+  <name>AzureUpload</name>
+  <js-module src="www/AzureUpload.js" name="AzureUpload">
+    <clobbers target="AzureUpload" />
+  </js-module>
+  
+  <platform name="android">
+    <source-file src="src/android/AzureUpload.java" target-dir="src/com/azure/upload" />
+  </platform>
+
+  <platform name="ios">
+    <source-file src="src/ios/AzureUpload.swift" />
+  </platform>
+</plugin>
