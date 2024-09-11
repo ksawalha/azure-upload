@@ -16,10 +16,12 @@
     <config-file target="AndroidManifest.xml" parent="manifest">
       <uses-permission android:name="android.permission.INTERNET" />
       <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+      <!-- Add any additional permissions or configurations here -->
     </config-file>
     <config-file target="build.gradle" parent="android">
       <property name="compileSdkVersion" value="30" />
       <property name="buildToolsVersion" value="30.0.3" />
+      <!-- Add any additional Gradle properties here -->
     </config-file>
   </platform>
 
@@ -28,6 +30,7 @@
     <source-file src="src/ios/AzureUpload.swift" />
     <config-file target="Podfile">
       <pod name="WebP" version="1.2.1" />
+      <!-- Add any additional pods or configurations here -->
     </config-file>
     <config-file target="Info.plist" parent="dict">
       <key>NSAppTransportSecurity</key>
@@ -35,6 +38,7 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
       </dict>
+      <!-- Add any additional settings here -->
     </config-file>
   </platform>
 </plugin>
