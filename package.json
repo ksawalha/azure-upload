@@ -1,7 +1,7 @@
 {
   "name": "cordova-azure-upload-plugin",
   "version": "1.0.0",
-  "description": "Cordova Plugin for Azure Chunked File Upload",
+  "description": "Cordova Plugin for Azure Chunked File Upload with Thumbnail Generation and Compression",
   "cordova": {
     "id": "cordova-azure-upload-plugin",
     "platforms": [
@@ -13,8 +13,23 @@
     "cordova",
     "azure",
     "upload",
-    "file-upload"
+    "file-upload",
+    "chunked",
+    "thumbnail",
+    "compression"
   ],
-  "author": "Your Name",
-  "license": "MIT"
+  "author": "Karam Sawalha",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ksawalha/azure-upload.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ksawalha/azure-upload/issues"
+  },
+  "homepage": "https://github.com/ksawalha/azure-upload#readme",
+  "dependencies": {
+    "cordova-android": "latest",
+    "cordova-ios": "latest"
+  }
 }
