@@ -2,12 +2,8 @@ package com.karamsawalha.arabicschool;
 
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
-import android.app.Service;
 import android.content.Context;
-import android.content.Intent;
 import android.os.Build;
-import android.os.IBinder;
 import android.util.Base64;
 import android.util.Log;
 
@@ -21,10 +17,12 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 
@@ -35,12 +33,16 @@ public class AzureUpload extends CordovaPlugin {
     private static final int CHUNK_SIZE = 1024 * 1024; // 1MB
     private static final String BASE_URL = "https://arabicschool.blob.core.windows.net/arabicschool";
 
+    private int totalFilesUploaded = 0;
+    private int totalFiles;
+
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
         if (action.equals("uploadFiles")) {
             JSONArray fileList = args.getJSONArray(0);
             String sasToken = args.getString(1);
             String postId = args.getString(2);
+            totalFiles = fileList.length();
             uploadFiles(fileList, sasToken, postId, callbackContext);
             return true;
         }
@@ -48,21 +50,21 @@ public class AzureUpload extends CordovaPlugin {
     }
 
     private void uploadFiles(JSONArray fileList, String sasToken, String postId, CallbackContext callbackContext) {
-        final int totalFiles = fileList.length();
         final ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(4);
 
         for (int i = 0; i < totalFiles; i++) {
             try {
                 JSONObject file = fileList.getJSONObject(i);
-                String destination = file.getString("destination"); // Get the destination path
+                String destination = file.getString("destination");
                 String fileName = file.getString("filename");
+                String originalName = file.getString("originalname"); // Include original name
                 String fileMime = file.getString("filemime");
                 String fileBinaryString = file.getString("filebinary");
                 byte[] fileBinary = Base64.decode(fileBinaryString, Base64.DEFAULT);
 
                 String filePath = BASE_URL + destination;
 
-                executor.execute(() -> uploadFile(filePath, fileName, fileBinary, sasToken, i + 1, totalFiles, postId, callbackContext));
+                executor.execute(() -> uploadFile(filePath, fileName, originalName, fileBinary, fileMime, sasToken, i + 1, totalFiles, postId, callbackContext));
             } catch (JSONException e) {
                 callbackContext.error("Error parsing file data");
                 return;
@@ -72,7 +74,7 @@ public class AzureUpload extends CordovaPlugin {
         executor.shutdown();
     }
 
-    private void uploadFile(String filePath, String fileName, byte[] fileBinary, String sasToken, int fileIndex, int totalFiles, String postId, CallbackContext callbackContext) {
+    private void uploadFile(String filePath, String fileName, String originalName, byte[] fileBinary, String fileMime, String sasToken, int fileIndex, int totalFiles, String postId, CallbackContext callbackContext) {
         int totalSize = fileBinary.length;
         int numChunks = (int) Math.ceil((double) totalSize / CHUNK_SIZE);
         int[] uploadedChunks = {0};
@@ -83,11 +85,11 @@ public class AzureUpload extends CordovaPlugin {
             byte[] chunk = new byte[end - start];
             System.arraycopy(fileBinary, start, chunk, 0, end - start);
 
-            uploadChunk(filePath, chunk, sasToken, fileIndex, totalFiles, uploadedChunks, numChunks, postId, callbackContext);
+            uploadChunk(filePath, chunk, sasToken, fileIndex, totalFiles, uploadedChunks, numChunks, fileMime, originalName, postId, callbackContext);
         }
     }
 
-    private void uploadChunk(String filePath, byte[] chunk, String sasToken, int fileIndex, int totalFiles, int[] uploadedChunks, int numChunks, String postId, CallbackContext callbackContext) {
+    private void uploadChunk(String filePath, byte[] chunk, String sasToken, int fileIndex, int totalFiles, int[] uploadedChunks, int numChunks, String fileMime, String originalName, String postId, CallbackContext callbackContext) {
         try {
             URL url = new URL(filePath + "?sv=" + sasToken);
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
@@ -106,7 +108,9 @@ public class AzureUpload extends CordovaPlugin {
                 updateNotification(fileIndex, totalFiles, progress);
 
                 if (uploadedChunks[0] == numChunks) {
-                    callCompletionAPI(postId, callbackContext);
+                    // File upload completed, commit it to the database
+                    String fileUri = filePath; // Assuming filePath serves as URI
+                    commitUpload(postId, fileMime, originalName, fileUri, callbackContext);
                 }
             } else {
                 Log.e("AzureUpload", "Failed to upload chunk: " + responseCode);
@@ -134,6 +138,41 @@ public class AzureUpload extends CordovaPlugin {
         NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build());
     }
 
+    private void commitUpload(String postId, String fileMime, String originalName, String fileUri, CallbackContext callbackContext) {
+        try {
+            URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/uploads/rest/a/commit?postid=" + postId);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setDoOutput(true);
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Content-Type", "application/json");
+
+            JSONObject json = new JSONObject();
+            json.put("filemime", fileMime);
+            json.put("originalname", originalName);
+            json.put("URI", fileUri);
+
+            DataOutputStream outputStream = new DataOutputStream(connection.getOutputStream());
+            outputStream.writeBytes(json.toString());
+            outputStream.flush();
+            outputStream.close();
+
+            int responseCode = connection.getResponseCode();
+            if (responseCode == 200) {
+                totalFilesUploaded++;
+                callbackContext.success("File committed successfully: " + originalName);
+                
+                // Check if all files have been uploaded and committed
+                if (totalFilesUploaded == totalFiles) {
+                    callCompletionAPI(postId, callbackContext);  // Call the final API after all files are done
+                }
+            } else {
+                callbackContext.error("Commit failed with response code: " + responseCode);
+            }
+        } catch (IOException | JSONException e) {
+            callbackContext.error("Error committing file: " + e.getMessage());
+        }
+    }
+
     private void callCompletionAPI(String postId, CallbackContext callbackContext) {
         try {
             URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/arabicschooln/rest/post/completed?id=" + postId);
@@ -144,7 +183,7 @@ public class AzureUpload extends CordovaPlugin {
             if (responseCode == 200) {
                 callbackContext.success("All files uploaded and completion API called successfully.");
             } else {
-                callbackContext.error("API call failed with response code: " + responseCode);
+                callbackContext.error("Completion API call failed with response code: " + responseCode);
             }
         } catch (IOException e) {
             callbackContext.error("Error calling completion API");
