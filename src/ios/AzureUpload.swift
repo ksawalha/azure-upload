@@ -4,7 +4,7 @@ import AVFoundation
 import UIKit
 
 @objc(AzureUpload) class AzureUpload: CDVPlugin {
-    
+
     @objc(uploadFiles:)
     func uploadFiles(command: CDVInvokedUrlCommand) {
         guard
@@ -15,9 +15,9 @@ import UIKit
             self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Invalid arguments"), callbackId: command.callbackId)
             return
         }
-        
+
         let totalFiles = fileList.count
-        
+
         // Request notification permission
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             if granted {
