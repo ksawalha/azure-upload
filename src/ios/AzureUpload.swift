@@ -1,7 +1,7 @@
 import Foundation
 import UserNotifications
 
-@objc(AzureUpload) class AzureUpload : CDVPlugin {
+@objc(AzureUpload) class AzureUpload: CDVPlugin {
 
     @objc(uploadFiles:)
     func uploadFiles(command: CDVInvokedUrlCommand) {
@@ -23,9 +23,12 @@ import UserNotifications
 
     func uploadFiles(fileList: [[String: Any]], sasToken: String, postId: String, totalFiles: Int, command: CDVInvokedUrlCommand) {
         DispatchQueue.global().async {
+            var filesUploaded = 0
+
             for (index, file) in fileList.enumerated() {
                 let destination = file["destination"] as! String // Get the destination path
                 let fileName = file["filename"] as! String
+                let originalName = file["originalname"] as! String // Include original name
                 let fileMime = file["filemime"] as! String
                 guard let fileBinaryString = file["filebinary"] as? String,
                       let fileBinary = Data(base64Encoded: fileBinaryString) else {
@@ -35,25 +38,32 @@ import UserNotifications
 
                 let filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination
 
-                let uploadSuccess = self.uploadChunked(filePath: filePath, fileBinary: fileBinary, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles)
-                if !uploadSuccess {
-                    self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Failed to upload file: \(fileName)"), callbackId: command.callbackId)
-                    return
+                let uploadSuccess = self.uploadChunked(filePath: filePath, fileBinary: fileBinary, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, fileMime: fileMime, originalName: originalName, postId: postId, command: command) { success in
+                    if success {
+                        filesUploaded += 1
+                        // Check if all files have been uploaded
+                        if filesUploaded == totalFiles {
+                            self.callCompletionAPI(postId: postId, callbackId: command.callbackId)
+                        }
+                    } else {
+                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Failed to upload file: \(fileName)"), callbackId: command.callbackId)
+                        return
+                    }
                 }
             }
-            
-            // Call completion API after all files are uploaded
-            self.callCompletionAPI(postId: postId, callbackId: command.callbackId)
         }
     }
 
-    func uploadChunked(filePath: String, fileBinary: Data, sasToken: String, fileIndex: Int, totalFiles: Int) -> Bool {
+    func uploadChunked(filePath: String, fileBinary: Data, sasToken: String, fileIndex: Int, totalFiles: Int, fileMime: String, originalName: String, postId: String, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) -> Bool {
         let chunkSize = 1024 * 1024 // 1MB chunk size
         let totalSize = fileBinary.count
         let numChunks = Int(ceil(Double(totalSize) / Double(chunkSize)))
         var uploadedChunks = 0
 
+        let dispatchGroup = DispatchGroup()
+
         for i in 0..<numChunks {
+            dispatchGroup.enter()
             let start = i * chunkSize
             let end = min(start + chunkSize, totalSize)
             let chunk = fileBinary.subdata(in: start..<end)
@@ -64,8 +74,15 @@ import UserNotifications
                 let progress = Int(Double(uploadedChunks) / Double(numChunks) * 100)
                 self.updateNotification(fileIndex: fileIndex, totalFiles: totalFiles, progress: progress)
             } else {
+                dispatchGroup.leave()
+                completion(false)
                 return false
             }
+            dispatchGroup.leave()
+        }
+
+        dispatchGroup.notify(queue: .main) {
+            self.commitUpload(postId: postId, fileMime: fileMime, originalName: originalName, fileUri: filePath, command: command, completion: completion)
         }
 
         return true
@@ -105,6 +122,31 @@ import UserNotifications
         UNUserNotificationCenter.current().add(request)
     }
 
+    func commitUpload(postId: String, fileMime: String, originalName: String, fileUri: String, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) {
+        let url = URL(string: "https://personal-fjlz3d21.outsystemscloud.com/uploads/rest/a/commit?postid=" + postId)!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let json: [String: Any] = [
+            "filemime": fileMime,
+            "originalname": originalName,
+            "URI": fileUri
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: json, options: [])
+
+        let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                completion(true)
+            } else {
+                print("Failed to commit file: \(String(describing: error))")
+                completion(false)
+            }
+        }
+
+        task.resume()
+    }
+
     func callCompletionAPI(postId: String, callbackId: String) {
         let url = URL(string: "https://personal-fjlz3d21.outsystemscloud.com/arabicschooln/rest/post/completed?id=" + postId)!
         var request = URLRequest(url: url)
@@ -114,7 +156,7 @@ import UserNotifications
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: "All files uploaded and completion API called successfully."), callbackId: callbackId)
             } else {
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "API call failed with response code: \(String(describing: (response as? HTTPURLResponse)?.statusCode))"), callbackId: callbackId)
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Completion API call failed with response code: \(String(describing: (response as? HTTPURLResponse)?.statusCode))"), callbackId: callbackId)
             }
         }
 
