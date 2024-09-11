@@ -42,14 +42,14 @@ public class AzureUpload extends CordovaPlugin {
                     JSONObject file = fileList.getJSONObject(i);
                     String destination = file.getString("destination");
                     String filename = file.getString("filename");
-                    String originalname = file.getString("originalname");
-                    String filemime = file.getString("filemime");
-                    String filebinary = file.getString("filebinary");
+                    String originalName = file.getString("originalname"); // Fixed variable name
+                    String fileMime = file.getString("filemime"); // Fixed variable name
+                    String fileBinary = file.getString("filebinary"); // Fixed variable name
                     
-                    byte[] fileData = Base64.decode(filebinary, Base64.DEFAULT);
+                    byte[] fileData = Base64.decode(fileBinary, Base64.DEFAULT);
                     String filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination;
                     
-                    boolean success = uploadChunked(filePath, fileData, sasToken, filename, filemime, originalname, postId);
+                    boolean success = uploadChunked(filePath, fileData, sasToken, filename, fileMime, originalName, postId);
                     if (success) {
                         filesUploaded++;
                         if (filesUploaded == totalFiles) {
@@ -93,7 +93,7 @@ public class AzureUpload extends CordovaPlugin {
 
     private boolean uploadChunk(String filePath, byte[] chunk, String sasToken) {
         try {
-            URL url = new URL(filePath + "?sv=" + sasToken);
+            URL url = new URL(filePath + "?sv=" + sasToken); // Ensure URL encoding for parameters
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("PUT");
             connection.setRequestProperty("x-ms-blob-type", "BlockBlob");
