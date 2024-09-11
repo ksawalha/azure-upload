@@ -1,8 +1,10 @@
 import Foundation
 import UserNotifications
+import AVFoundation
+import UIKit
 
 @objc(AzureUpload) class AzureUpload: CDVPlugin {
-
+    
     @objc(uploadFiles:)
     func uploadFiles(command: CDVInvokedUrlCommand) {
         let fileList = command.arguments[0] as! [[String: Any]]
@@ -11,7 +13,7 @@ import UserNotifications
         
         let totalFiles = fileList.count
         
-        // Ask for notification permission
+        // Request notification permission
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { (granted, error) in
             if granted {
                 self.uploadFiles(fileList: fileList, sasToken: sasToken, postId: postId, totalFiles: totalFiles, command: command)
@@ -26,9 +28,9 @@ import UserNotifications
             var filesUploaded = 0
 
             for (index, file) in fileList.enumerated() {
-                let destination = file["destination"] as! String
+                let destination = file["destination"] as! String // Get the destination path
                 let fileName = file["filename"] as! String
-                let originalName = file["originalname"] as! String
+                let originalName = file["originalname"] as! String // Include original name
                 let fileMime = file["filemime"] as! String
                 guard let fileBinaryString = file["filebinary"] as? String,
                       let fileBinary = Data(base64Encoded: fileBinaryString) else {
@@ -38,9 +40,10 @@ import UserNotifications
 
                 let filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination
 
-                self.uploadChunked(filePath: filePath, fileBinary: fileBinary, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, fileMime: fileMime, originalName: originalName, postId: postId, command: command) { success in
+                let uploadSuccess = self.uploadChunked(filePath: filePath, fileBinary: fileBinary, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, fileMime: fileMime, originalName: originalName, postId: postId, command: command) { success in
                     if success {
                         filesUploaded += 1
+                        // Check if all files have been uploaded
                         if filesUploaded == totalFiles {
                             self.callCompletionAPI(postId: postId, callbackId: command.callbackId)
                         }
@@ -53,7 +56,7 @@ import UserNotifications
         }
     }
 
-    func uploadChunked(filePath: String, fileBinary: Data, sasToken: String, fileIndex: Int, totalFiles: Int, fileMime: String, originalName: String, postId: String, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) {
+    func uploadChunked(filePath: String, fileBinary: Data, sasToken: String, fileIndex: Int, totalFiles: Int, fileMime: String, originalName: String, postId: String, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) -> Bool {
         let chunkSize = 1024 * 1024 // 1MB chunk size
         let totalSize = fileBinary.count
         let numChunks = Int(ceil(Double(totalSize) / Double(chunkSize)))
@@ -75,7 +78,7 @@ import UserNotifications
             } else {
                 dispatchGroup.leave()
                 completion(false)
-                return
+                return false
             }
             dispatchGroup.leave()
         }
@@ -84,7 +87,7 @@ import UserNotifications
             self.commitUpload(postId: postId, fileMime: fileMime, originalName: originalName, fileUri: filePath, command: command, completion: completion)
         }
 
-        completion(true)
+        return true
     }
 
     func uploadChunk(filePath: String, chunk: Data, sasToken: String) -> Bool {
@@ -160,5 +163,92 @@ import UserNotifications
         }
 
         task.resume()
+    }
+    
+    func processFile(file: [String: Any], completion: @escaping (Data?) -> Void) {
+        guard let mimeType = file["filemime"] as? String else {
+            completion(nil)
+            return
+        }
+        
+        if mimeType.starts(with: "video") {
+            // Process video file
+            let fileBinary = file["filebinary"] as! String
+            guard let fileData = Data(base64Encoded: fileBinary) else {
+                completion(nil)
+                return
+            }
+            
+            let videoFilePath = "https://arabicschool.blob.core.windows.net/arabicschool" + (file["destination"] as! String)
+            extractThumbnail(from: fileData) { thumbnailData in
+                if let thumbnailData = thumbnailData {
+                    let thumbnailFilePath = videoFilePath.replacingOccurrences(of: "video", with: "thumbnail").replacingOccurrences(of: ".mp4", with: ".webp")
+                    self.uploadChunked(filePath: thumbnailFilePath, fileBinary: thumbnailData, sasToken: "", fileIndex: 0, totalFiles: 0, fileMime: "image/webp", originalName: "", postId: "") { success in
+                        if success {
+                            completion(fileData)
+                        } else {
+                            completion(nil)
+                        }
+                    }
+                } else {
+                    completion(nil)
+                }
+            }
+        } else if mimeType.starts(with: "image") {
+            // Process image file
+            let fileBinary = file["filebinary"] as! String
+            guard let fileData = Data(base64Encoded: fileBinary), let image = UIImage(data: fileData) else {
+                completion(nil)
+                return
+            }
+            
+            if let compressedImageData = compressAndConvertImage(image) {
+                completion(compressedImageData)
+            } else {
+                completion(nil)
+            }
+        } else {
+            completion(Data(base64Encoded: file["filebinary"] as! String))
+        }
+    }
+    
+    func extractThumbnail(from videoData: Data, completion: @escaping (Data?) -> Void) {
+        let tempFileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
+        
+        do {
+            try videoData.write(to: tempFileURL)
+            
+            let asset = AVAsset(url: tempFileURL)
+            let assetImageGenerator = AVAssetImageGenerator(asset: asset)
+            assetImageGenerator.appliesPreferredTrackTransform = true
+            
+            assetImageGenerator.copyCGImage(at: CMTime(seconds: 1, preferredTimescale: 600), actualTime: nil) { cgImage, _ in
+                if let cgImage = cgImage {
+                    let image = UIImage(cgImage: cgImage)
+                    if let webpData = self.convertImageToWebP(image) {
+                        completion(webpData)
+                    } else {
+                        completion(nil)
+                    }
+                } else {
+                    completion(nil)
+                }
+            }
+        } catch {
+            completion(nil)
+        }
+    }
+    
+    func convertImageToWebP(_ image: UIImage) -> Data? {
+        // Placeholder for WebP conversion
+        return nil
+    }
+    
+    func compressAndConvertImage(_ image: UIImage) -> Data? {
+        let compressedImage = image.jpegData(compressionQuality: 0.7)
+        if let compressedImage = compressedImage {
+            return convertImageToWebP(UIImage(data: compressedImage)!)
+        }
+        return nil
     }
 }
