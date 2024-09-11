@@ -7,14 +7,19 @@ import UIKit
     
     @objc(uploadFiles:)
     func uploadFiles(command: CDVInvokedUrlCommand) {
-        let fileList = command.arguments[0] as! [[String: Any]]
-        let sasToken = command.arguments[1] as! String
-        let postId = command.arguments[2] as! String
+        guard
+            let fileList = command.arguments[0] as? [[String: Any]],
+            let sasToken = command.arguments[1] as? String,
+            let postId = command.arguments[2] as? String
+        else {
+            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Invalid arguments"), callbackId: command.callbackId)
+            return
+        }
         
         let totalFiles = fileList.count
         
         // Request notification permission
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { (granted, error) in
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             if granted {
                 self.uploadFiles(fileList: fileList, sasToken: sasToken, postId: postId, totalFiles: totalFiles, command: command)
             } else {
@@ -28,19 +33,21 @@ import UIKit
             var filesUploaded = 0
 
             for (index, file) in fileList.enumerated() {
-                let destination = file["destination"] as! String // Get the destination path
-                let fileName = file["filename"] as! String
-                let originalName = file["originalname"] as! String // Include original name
-                let fileMime = file["filemime"] as! String
-                guard let fileBinaryString = file["filebinary"] as? String,
-                      let fileBinary = Data(base64Encoded: fileBinaryString) else {
+                guard
+                    let destination = file["destination"] as? String,
+                    let fileName = file["filename"] as? String,
+                    let originalName = file["originalname"] as? String,
+                    let fileMime = file["filemime"] as? String,
+                    let fileBinaryString = file["filebinary"] as? String,
+                    let fileBinary = Data(base64Encoded: fileBinaryString)
+                else {
                     self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Invalid file data"), callbackId: command.callbackId)
                     return
                 }
 
                 let filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination
 
-                let uploadSuccess = self.uploadChunked(filePath: filePath, fileBinary: fileBinary, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, fileMime: fileMime, originalName: originalName, postId: postId, command: command) { success in
+                self.uploadChunked(filePath: filePath, fileBinary: fileBinary, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, fileMime: fileMime, originalName: originalName, postId: postId, command: command) { success in
                     if success {
                         filesUploaded += 1
                         // Check if all files have been uploaded
@@ -56,7 +63,7 @@ import UIKit
         }
     }
 
-    func uploadChunked(filePath: String, fileBinary: Data, sasToken: String, fileIndex: Int, totalFiles: Int, fileMime: String, originalName: String, postId: String, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) -> Bool {
+    func uploadChunked(filePath: String, fileBinary: Data, sasToken: String, fileIndex: Int, totalFiles: Int, fileMime: String, originalName: String, postId: String, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) {
         let chunkSize = 1024 * 1024 // 1MB chunk size
         let totalSize = fileBinary.count
         let numChunks = Int(ceil(Double(totalSize) / Double(chunkSize)))
@@ -78,7 +85,7 @@ import UIKit
             } else {
                 dispatchGroup.leave()
                 completion(false)
-                return false
+                return
             }
             dispatchGroup.leave()
         }
@@ -86,8 +93,6 @@ import UIKit
         dispatchGroup.notify(queue: .main) {
             self.commitUpload(postId: postId, fileMime: fileMime, originalName: originalName, fileUri: filePath, command: command, completion: completion)
         }
-
-        return true
     }
 
     func uploadChunk(filePath: String, chunk: Data, sasToken: String) -> Bool {
@@ -96,10 +101,10 @@ import UIKit
         request.setValue("BlockBlob", forHTTPHeaderField: "x-ms-blob-type")
         request.httpBody = chunk
 
-        let semaphore = DispatchSemaphore(value: 0)
         var success = false
+        let semaphore = DispatchSemaphore(value: 0)
 
-        let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
+        let task = URLSession.shared.dataTask(with: request) { (_, response, error) in
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 201 {
                 success = true
             } else {
@@ -137,7 +142,7 @@ import UIKit
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: json, options: [])
 
-        let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
+        let task = URLSession.shared.dataTask(with: request) { (_, response, error) in
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                 completion(true)
             } else {
@@ -154,7 +159,7 @@ import UIKit
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
 
-        let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
+        let task = URLSession.shared.dataTask(with: request) { (_, response, error) in
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: "All files uploaded and completion API called successfully."), callbackId: callbackId)
             } else {
@@ -173,13 +178,15 @@ import UIKit
         
         if mimeType.starts(with: "video") {
             // Process video file
-            let fileBinary = file["filebinary"] as! String
-            guard let fileData = Data(base64Encoded: fileBinary) else {
+            guard
+                let fileBinary = file["filebinary"] as? String,
+                let fileData = Data(base64Encoded: fileBinary)
+            else {
                 completion(nil)
                 return
             }
             
-            let videoFilePath = "https://arabicschool.blob.core.windows.net/arabicschool" + (file["destination"] as! String)
+            let videoFilePath = "https://arabicschool.blob.core.windows.net/arabicschool" + (file["destination"] as? String ?? "")
             extractThumbnail(from: fileData) { thumbnailData in
                 if let thumbnailData = thumbnailData {
                     let thumbnailFilePath = videoFilePath.replacingOccurrences(of: "video", with: "thumbnail").replacingOccurrences(of: ".mp4", with: ".webp")
@@ -196,8 +203,11 @@ import UIKit
             }
         } else if mimeType.starts(with: "image") {
             // Process image file
-            let fileBinary = file["filebinary"] as! String
-            guard let fileData = Data(base64Encoded: fileBinary), let image = UIImage(data: fileData) else {
+            guard
+                let fileBinary = file["filebinary"] as? String,
+                let fileData = Data(base64Encoded: fileBinary),
+                let image = UIImage(data: fileData)
+            else {
                 completion(nil)
                 return
             }
@@ -245,10 +255,9 @@ import UIKit
     }
     
     func compressAndConvertImage(_ image: UIImage) -> Data? {
-        let compressedImage = image.jpegData(compressionQuality: 0.7)
-        if let compressedImage = compressedImage {
-            return convertImageToWebP(UIImage(data: compressedImage)!)
+        guard let compressedImage = image.jpegData(compressionQuality: 0.7) else {
+            return nil
         }
-        return nil
+        return convertImageToWebP(UIImage(data: compressedImage)!)
     }
 }
