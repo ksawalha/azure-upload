@@ -10,11 +10,14 @@ import org.apache.cordova.PluginResult;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.util.UUID;
 
 public class AzureUpload extends CordovaPlugin {
@@ -38,17 +41,26 @@ public class AzureUpload extends CordovaPlugin {
             try {
                 int totalFiles = fileList.length();
                 int filesUploaded = 0;
+
                 for (int i = 0; i < totalFiles; i++) {
                     JSONObject file = fileList.getJSONObject(i);
+
                     String destination = file.getString("destination");
                     String filename = file.getString("filename");
-                    String originalName = file.getString("originalname"); // Fixed variable name
-                    String fileMime = file.getString("filemime"); // Fixed variable name
-                    String fileBinary = file.getString("filebinary"); // Fixed variable name
-                    
+                    String originalName = file.getString("originalname");
+                    String fileMime = file.getString("filemime");
+                    String fileBinary = file.getString("filebinary");
+
+                    // Debugging output
+                    Log.d(TAG, "Destination: " + destination);
+                    Log.d(TAG, "Filename: " + filename);
+                    Log.d(TAG, "Original Name: " + originalName);
+                    Log.d(TAG, "File MIME: " + fileMime);
+                    Log.d(TAG, "File Binary Length: " + fileBinary.length());
+
                     byte[] fileData = Base64.decode(fileBinary, Base64.DEFAULT);
                     String filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination;
-                    
+
                     boolean success = uploadChunked(filePath, fileData, sasToken, filename, fileMime, originalName, postId);
                     if (success) {
                         filesUploaded++;
@@ -93,18 +105,23 @@ public class AzureUpload extends CordovaPlugin {
 
     private boolean uploadChunk(String filePath, byte[] chunk, String sasToken) {
         try {
-            URL url = new URL(filePath + "?sv=" + sasToken); // Ensure URL encoding for parameters
+            String encodedSasToken = URLEncoder.encode(sasToken, "UTF-8");
+            URL url = new URL(filePath + "?sv=" + encodedSasToken);
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("PUT");
             connection.setRequestProperty("x-ms-blob-type", "BlockBlob");
             connection.setDoOutput(true);
-            
+
             try (OutputStream outputStream = connection.getOutputStream()) {
                 outputStream.write(chunk);
             }
-            
+
             int responseCode = connection.getResponseCode();
-            return responseCode == HttpURLConnection.HTTP_CREATED;
+            if (responseCode != HttpURLConnection.HTTP_CREATED) {
+                logErrorResponse(connection);
+                return false;
+            }
+            return true;
         } catch (Exception e) {
             Log.e(TAG, "Upload Chunk Error: " + e.getMessage());
             return false;
@@ -113,12 +130,12 @@ public class AzureUpload extends CordovaPlugin {
 
     private boolean commitUpload(String postId, String fileMime, String originalName, String fileUri) {
         try {
-            URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/uploads/rest/a/commit?postid=" + postId);
+            URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/uploads/rest/a/commit?postid=" + URLEncoder.encode(postId, "UTF-8"));
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("POST");
             connection.setRequestProperty("Content-Type", "application/json");
             connection.setDoOutput(true);
-            
+
             JSONObject json = new JSONObject();
             json.put("filemime", fileMime);
             json.put("originalname", originalName);
@@ -129,7 +146,11 @@ public class AzureUpload extends CordovaPlugin {
             }
 
             int responseCode = connection.getResponseCode();
-            return responseCode == HttpURLConnection.HTTP_OK;
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                logErrorResponse(connection);
+                return false;
+            }
+            return true;
         } catch (Exception e) {
             Log.e(TAG, "Commit Upload Error: " + e.getMessage());
             return false;
@@ -139,7 +160,7 @@ public class AzureUpload extends CordovaPlugin {
     private void callCompletionAPI(String postId, CallbackContext callbackContext) {
         cordova.getThreadPool().execute(() -> {
             try {
-                URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/arabicschooln/rest/post/completed?id=" + postId);
+                URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/arabicschooln/rest/post/completed?id=" + URLEncoder.encode(postId, "UTF-8"));
                 HttpURLConnection connection = (HttpURLConnection) url.openConnection();
                 connection.setRequestMethod("GET");
 
@@ -153,5 +174,22 @@ public class AzureUpload extends CordovaPlugin {
                 callbackContext.error("Completion API Error: " + e.getMessage());
             }
         });
+    }
+
+    private void logErrorResponse(HttpURLConnection connection) {
+        try {
+            InputStream errorStream = connection.getErrorStream();
+            if (errorStream != null) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(errorStream));
+                StringBuilder errorResponse = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    errorResponse.append(line);
+                }
+                Log.e(TAG, "Error Response: " + errorResponse.toString());
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error Reading Error Response: " + e.getMessage());
+        }
     }
 }
