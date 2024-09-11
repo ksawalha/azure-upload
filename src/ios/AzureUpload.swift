@@ -26,9 +26,9 @@ import UserNotifications
             var filesUploaded = 0
 
             for (index, file) in fileList.enumerated() {
-                let destination = file["destination"] as! String // Get the destination path
+                let destination = file["destination"] as! String
                 let fileName = file["filename"] as! String
-                let originalName = file["originalname"] as! String // Include original name
+                let originalName = file["originalname"] as! String
                 let fileMime = file["filemime"] as! String
                 guard let fileBinaryString = file["filebinary"] as? String,
                       let fileBinary = Data(base64Encoded: fileBinaryString) else {
@@ -38,10 +38,9 @@ import UserNotifications
 
                 let filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination
 
-                let uploadSuccess = self.uploadChunked(filePath: filePath, fileBinary: fileBinary, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, fileMime: fileMime, originalName: originalName, postId: postId, command: command) { success in
+                self.uploadChunked(filePath: filePath, fileBinary: fileBinary, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, fileMime: fileMime, originalName: originalName, postId: postId, command: command) { success in
                     if success {
                         filesUploaded += 1
-                        // Check if all files have been uploaded
                         if filesUploaded == totalFiles {
                             self.callCompletionAPI(postId: postId, callbackId: command.callbackId)
                         }
@@ -54,7 +53,7 @@ import UserNotifications
         }
     }
 
-    func uploadChunked(filePath: String, fileBinary: Data, sasToken: String, fileIndex: Int, totalFiles: Int, fileMime: String, originalName: String, postId: String, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) -> Bool {
+    func uploadChunked(filePath: String, fileBinary: Data, sasToken: String, fileIndex: Int, totalFiles: Int, fileMime: String, originalName: String, postId: String, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) {
         let chunkSize = 1024 * 1024 // 1MB chunk size
         let totalSize = fileBinary.count
         let numChunks = Int(ceil(Double(totalSize) / Double(chunkSize)))
@@ -76,7 +75,7 @@ import UserNotifications
             } else {
                 dispatchGroup.leave()
                 completion(false)
-                return false
+                return
             }
             dispatchGroup.leave()
         }
@@ -85,7 +84,7 @@ import UserNotifications
             self.commitUpload(postId: postId, fileMime: fileMime, originalName: originalName, fileUri: filePath, command: command, completion: completion)
         }
 
-        return true
+        completion(true)
     }
 
     func uploadChunk(filePath: String, chunk: Data, sasToken: String) -> Bool {
