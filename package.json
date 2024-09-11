@@ -1,5 +1,5 @@
 {
-  "name": "cordova-azure-upload-plugin",
+  "name": "cordova-azure",
   "version": "1.0.0",
   "description": "Cordova Plugin for Azure Chunked File Upload with Thumbnail Generation and Compression",
   "cordova": {
