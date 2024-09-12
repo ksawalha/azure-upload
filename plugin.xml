@@ -15,7 +15,7 @@
     <source-file src="src/android/AzureUpload.java" target-dir="src/com/azure/upload" />
     <config-file target="AndroidManifest.xml" parent="/*">
       <!-- Permissions required for network operations and external storage -->
-      <uses-permission android:name="android.permission.INTERNET" />
+      <uses-permission android:name="android.permission.INTERNET"/>
       <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     </config-file>
   </platform>
