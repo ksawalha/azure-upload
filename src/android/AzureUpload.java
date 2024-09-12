@@ -2,6 +2,12 @@ package com.azure.upload;
 
 import android.util.Base64;
 import android.util.Log;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.content.Context;
+import androidx.core.app.NotificationCompat;
+import android.os.Build;
 import androidx.annotation.NonNull;
 import org.apache.cordova.CordovaPlugin;
 import org.apache.cordova.CallbackContext;
@@ -23,6 +29,10 @@ import java.util.UUID;
 public class AzureUpload extends CordovaPlugin {
 
     private static final String TAG = "AzureUpload";
+    private NotificationManager notificationManager;
+    private NotificationCompat.Builder notificationBuilder;
+    private static final String CHANNEL_ID = "upload_channel";
+    private static final int NOTIFICATION_ID = 1;
 
     @Override
     public boolean execute(@NonNull String action, JSONArray args, @NonNull CallbackContext callbackContext) throws JSONException {
@@ -41,19 +51,18 @@ public class AzureUpload extends CordovaPlugin {
             try {
                 int totalFiles = fileList.length();
                 int filesUploaded = 0;
+                initializeNotification(totalFiles);  // Initialize notification here
 
                 for (int i = 0; i < totalFiles; i++) {
                     JSONObject file = fileList.getJSONObject(i);
 
                     String destination = file.getString("destination");
-                    String filename = file.getString("filename");
                     String originalName = file.getString("originalname");
                     String fileMime = file.getString("filemime");
                     String fileBinary = file.getString("filebinary");
 
                     // Debugging output
                     Log.d(TAG, "Destination: " + destination);
-                    Log.d(TAG, "Filename: " + filename);
                     Log.d(TAG, "Original Name: " + originalName);
                     Log.d(TAG, "File MIME: " + fileMime);
                     Log.d(TAG, "File Binary Length: " + fileBinary.length());
@@ -61,14 +70,17 @@ public class AzureUpload extends CordovaPlugin {
                     byte[] fileData = Base64.decode(fileBinary, Base64.DEFAULT);
                     String filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination;
 
-                    boolean success = uploadChunked(filePath, fileData, sasToken, filename, fileMime, originalName, postId);
+                    boolean success = uploadChunked(filePath, fileData, sasToken, originalName, fileMime, originalName, postId);
                     if (success) {
                         filesUploaded++;
+                        updateNotification(filesUploaded, totalFiles);  // Update notification progress
                         if (filesUploaded == totalFiles) {
                             callCompletionAPI(postId, callbackContext);
+                            removeNotification();  // Remove notification once upload is complete
                         }
                     } else {
-                        callbackContext.error("Failed to upload file: " + filename);
+                        callbackContext.error("Failed to upload file: " + originalName);
+                        showErrorNotification("Failed to upload file: " + originalName);
                         return;
                     }
                 }
@@ -78,7 +90,7 @@ public class AzureUpload extends CordovaPlugin {
         });
     }
 
-    private boolean uploadChunked(String filePath, byte[] fileBinary, String sasToken, String filename, String fileMime, String originalName, String postId) {
+    private boolean uploadChunked(String filePath, byte[] fileBinary, String sasToken, String originalName, String fileMime, String originalNameForLogging, String postId) {
         try {
             final int chunkSize = 1024 * 1024; // 1MB chunk size
             int totalSize = fileBinary.length;
@@ -170,7 +182,7 @@ public class AzureUpload extends CordovaPlugin {
             // Create the URL for the API endpoint, with the postId as a parameter
             URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/uploads/rest/a/commit?postid=" + URLEncoder.encode(postId, "UTF-8"));
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-            
+
             // Configure the HTTP request (POST)
             connection.setRequestMethod("POST");
             connection.setRequestProperty("Content-Type", "application/json");
@@ -223,19 +235,53 @@ public class AzureUpload extends CordovaPlugin {
     }
 
     private void logErrorResponse(HttpURLConnection connection) {
-        try {
-            InputStream errorStream = connection.getErrorStream();
-            if (errorStream != null) {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(errorStream));
-                StringBuilder errorResponse = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    errorResponse.append(line);
-                }
-                Log.e(TAG, "Error Response: " + errorResponse.toString());
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getErrorStream()))) {
+            String line;
+            StringBuilder response = new StringBuilder();
+            while ((line = reader.readLine()) != null) {
+                response.append(line);
             }
+            Log.e(TAG, "Error Response: " + response.toString());
         } catch (Exception e) {
             Log.e(TAG, "Error Logging Response: " + e.getMessage());
         }
+    }
+
+    private void initializeNotification(int totalFiles) {
+        notificationManager = (NotificationManager) cordova.getContext().getSystemService(Context.NOTIFICATION_SERVICE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "File Upload", NotificationManager.IMPORTANCE_LOW);
+            notificationManager.createNotificationChannel(channel);
+        }
+
+        notificationBuilder = new NotificationCompat.Builder(cordova.getContext(), CHANNEL_ID)
+                .setContentTitle("File Upload")
+                .setContentText("Uploading files")
+                .setSmallIcon(android.R.drawable.ic_menu_upload)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setProgress(totalFiles, 0, false)
+                .setOngoing(true);
+
+        notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build());
+    }
+
+    private void updateNotification(int filesUploaded, int totalFiles) {
+        notificationBuilder.setProgress(totalFiles, filesUploaded, false)
+                .setContentText("Uploaded " + filesUploaded + " of " + totalFiles + " files");
+        notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build());
+    }
+
+    private void removeNotification() {
+        notificationManager.cancel(NOTIFICATION_ID);
+    }
+
+    private void showErrorNotification(String errorMessage) {
+        Notification errorNotification = new NotificationCompat.Builder(cordova.getContext(), CHANNEL_ID)
+                .setContentTitle("File Upload Failed")
+                .setContentText(errorMessage)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .build();
+        notificationManager.notify(NOTIFICATION_ID + 1, errorNotification);  // Use a different ID for the error notification
     }
 }
