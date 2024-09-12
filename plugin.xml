@@ -5,7 +5,7 @@
   <license>Apache 2.0</license>
   <keywords>cordova, azure, upload, file, blob</keywords>
 
-
+  <!-- JavaScript module for the plugin -->
   <js-module src="www/AzureUpload.js" name="AzureUpload">
     <clobbers target="AzureUpload" />
   </js-module>
@@ -14,6 +14,7 @@
   <platform name="android">
     <source-file src="src/android/AzureUpload.java" target-dir="src/com/azure/upload" />
     <config-file target="AndroidManifest.xml" parent="manifest">
+      <!-- Permissions required for network operations and external storage -->
       <uses-permission android:name="android.permission.INTERNET" />
       <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     </config-file>
@@ -23,12 +24,13 @@
   <platform name="ios">
     <source-file src="src/ios/AzureUpload.swift" />
     <config-file target="Podfile">
+      <!-- Ensure the WebP pod and any additional pods are properly configured -->
       <pod name="WebP" version="1.2.1" />
-      <!-- Add any additional pods or configurations here -->
     </config-file>
     <config-file target="Info.plist" parent="dict">
       <key>NSAppTransportSecurity</key>
       <dict>
+        <!-- Set to true for development. For production, configure exceptions or set to false -->
         <key>NSAllowsArbitraryLoads</key>
         <true/>
       </dict>
