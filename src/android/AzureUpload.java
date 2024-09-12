@@ -11,7 +11,6 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
 import androidx.core.app.NotificationCompat;
-import android.app.NotificationManager;
 import androidx.annotation.NonNull;
 import org.apache.cordova.CordovaPlugin;
 import org.apache.cordova.CallbackContext;
@@ -22,6 +21,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -72,18 +73,18 @@ public class AzureUpload extends CordovaPlugin {
                     Log.d(TAG, "File Binary Length: " + fileBinary.length());
 
                     byte[] fileData = Base64.decode(fileBinary, Base64.DEFAULT);
-                    
+
                     // Handle image compression if needed
                     if (fileMime.startsWith("image/")) {
                         fileData = compressImage(fileData);
                         originalName = originalName.replaceFirst("[.][^.]+$", ".jpg"); // Change file extension to .jpg
                         fileMime = "image/jpeg";
-                    } else if (fileMime.equals("video/mp4")) {
+                    } else if (fileMime.startsWith("video/")) {
                         fileData = extractThumbnailFromVideo(fileData);
                         originalName = originalName.replaceFirst("[.][^.]+$", ".jpg"); // Change file extension to .jpg
                         fileMime = "image/jpeg";
                     }
-                    
+
                     String filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination;
 
                     boolean success = uploadChunked(filePath, fileData, sasToken, originalName, fileMime, originalName, postId);
@@ -242,81 +243,37 @@ public class AzureUpload extends CordovaPlugin {
 
     private boolean commitUpload(String postId, String fileMime, String originalName, String filePath) {
         try {
-            URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/uploads/rest/a/complete?postid=" + URLEncoder.encode(postId, "UTF-8"));
+            URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/uploads/rest/a/commit?postid=" + URLEncoder.encode(postId, "UTF-8")
+                    + "&mime=" + URLEncoder.encode(fileMime, "UTF-8")
+                    + "&filename=" + URLEncoder.encode(originalName, "UTF-8")
+                    + "&path=" + URLEncoder.encode(filePath, "UTF-8"));
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("POST");
             connection.setRequestProperty("Content-Type", "application/json");
 
-            String jsonPayload = new JSONObject()
-                    .put("fileMime", fileMime)
-                    .put("originalName", originalName)
-                    .put("filePath", filePath)
-                    .toString();
-
-            connection.setDoOutput(true);
-            try (OutputStream outputStream = connection.getOutputStream()) {
-                outputStream.write(jsonPayload.getBytes("UTF-8"));
-            }
-
             int responseCode = connection.getResponseCode();
-            if (responseCode != HttpURLConnection.HTTP_OK) {
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                return true;
+            } else {
                 logErrorResponse(connection);
                 return false;
             }
-            return true;
         } catch (Exception e) {
             Log.e(TAG, "Commit Upload Error: " + e.getMessage());
             return false;
         }
     }
 
-    private void initializeNotification(int totalFiles) {
-        notificationManager = (NotificationManager) cordova.getActivity().getSystemService(Context.NOTIFICATION_SERVICE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Upload Progress", NotificationManager.IMPORTANCE_LOW);
-            notificationManager.createNotificationChannel(channel);
-        }
-        notificationBuilder = new NotificationCompat.Builder(cordova.getActivity(), CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_menu_upload)
-                .setContentTitle("Uploading Files")
-                .setContentText("0/" + totalFiles + " files uploaded")
-                .setProgress(totalFiles, 0, false);
-        notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build());
-    }
-
-    private void updateNotification(int filesUploaded, int totalFiles) {
-        if (notificationBuilder != null) {
-            notificationBuilder.setContentText(filesUploaded + "/" + totalFiles + " files uploaded")
-                    .setProgress(totalFiles, filesUploaded, false);
-            notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build());
-        }
-    }
-
-    private void removeNotification() {
-        if (notificationManager != null) {
-            notificationManager.cancel(NOTIFICATION_ID);
-        }
-    }
-
-    private void showErrorNotification(String errorMessage) {
-        NotificationCompat.Builder errorBuilder = new NotificationCompat.Builder(cordova.getActivity(), CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle("Upload Error")
-                .setContentText(errorMessage)
-                .setPriority(NotificationCompat.PRIORITY_HIGH);
-        notificationManager.notify(NOTIFICATION_ID, errorBuilder.build());
-    }
-
-    private void logErrorResponse(HttpURLConnection connection) {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getErrorStream()))) {
+    private void logErrorResponse(HttpURLConnection connection) throws Exception {
+        InputStream errorStream = connection.getErrorStream();
+        if (errorStream != null) {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(errorStream));
             StringBuilder errorResponse = new StringBuilder();
             String line;
             while ((line = reader.readLine()) != null) {
                 errorResponse.append(line);
             }
             Log.e(TAG, "Error Response: " + errorResponse.toString());
-        } catch (Exception e) {
-            Log.e(TAG, "Log Error Response Error: " + e.getMessage());
         }
     }
 
@@ -339,5 +296,49 @@ public class AzureUpload extends CordovaPlugin {
                 callbackContext.error("Completion API Error: " + e.getMessage());
             }
         });
+    }
+
+    private void initializeNotification(int totalFiles) {
+        Context context = cordova.getActivity().getApplicationContext();
+        notificationManager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Upload Progress", NotificationManager.IMPORTANCE_LOW);
+            notificationManager.createNotificationChannel(channel);
+        }
+
+        notificationBuilder = new NotificationCompat.Builder(context, CHANNEL_ID)
+                .setContentTitle("File Upload")
+                .setContentText("0/" + totalFiles + " files uploaded")
+                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true);
+    }
+
+    private void updateNotification(int filesUploaded, int totalFiles) {
+        if (notificationBuilder != null && notificationManager != null) {
+            notificationBuilder.setContentText(filesUploaded + "/" + totalFiles + " files uploaded");
+            notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build());
+        }
+    }
+
+    private void removeNotification() {
+        if (notificationManager != null) {
+            notificationManager.cancel(NOTIFICATION_ID);
+        }
+    }
+
+    private void showErrorNotification(String message) {
+        Context context = cordova.getActivity().getApplicationContext();
+        NotificationCompat.Builder errorNotificationBuilder = new NotificationCompat.Builder(context, CHANNEL_ID)
+                .setContentTitle("Upload Error")
+                .setContentText(message)
+                .setSmallIcon(android.R.drawable.stat_sys_warning)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true);
+
+        if (notificationManager != null) {
+            notificationManager.notify(NOTIFICATION_ID, errorNotificationBuilder.build());
+        }
     }
 }
