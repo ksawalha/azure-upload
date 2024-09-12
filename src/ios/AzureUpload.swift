@@ -2,6 +2,8 @@ import Foundation
 import UserNotifications
 import AVFoundation
 import UIKit
+import ImageIO
+import MobileCoreServices
 
 @objc(AzureUpload) class AzureUpload: CDVPlugin {
 
