@@ -7,7 +7,7 @@ import MobileCoreServices
 
 @objc(AzureUpload) class AzureUpload: CDVPlugin {
 
-    @objc(uploadFiles:)
+    @objc(uploadFiles:command:)
     func uploadFiles(command: CDVInvokedUrlCommand) {
         guard
             let fileList = command.arguments[0] as? [[String: Any]],
@@ -47,18 +47,34 @@ import MobileCoreServices
                     return
                 }
 
-                let filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination
-
-                self.uploadChunked(filePath: filePath, fileBinary: fileBinary, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, fileMime: fileMime, originalName: originalName, postId: postId, command: command) { success in
-                    if success {
-                        filesUploaded += 1
-                        // Check if all files have been uploaded
-                        if filesUploaded == totalFiles {
-                            self.callCompletionAPI(postId: postId, callbackId: command.callbackId)
-                        }
-                    } else {
-                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Failed to upload file: \(fileName)"), callbackId: command.callbackId)
+                // Process the file and update the metadata if necessary
+                self.processFile(file: [
+                    "destination": destination,
+                    "filename": fileName,
+                    "originalname": originalName,
+                    "filemime": fileMime,
+                    "filebinary": fileBinaryString
+                ]) { processedData in
+                    guard let processedData = processedData else {
+                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Failed to process file"), callbackId: command.callbackId)
                         return
+                    }
+
+                    let filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination
+                    let updatedFileName = (fileName as NSString).deletingPathExtension + ".jpeg"
+                    let updatedOriginalName = (originalName as NSString).deletingPathExtension + ".jpeg"
+
+                    self.uploadChunked(filePath: filePath, fileBinary: processedData, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, fileMime: "image/jpeg", originalName: updatedOriginalName, postId: postId, command: command) { success in
+                        if success {
+                            filesUploaded += 1
+                            // Check if all files have been uploaded
+                            if filesUploaded == totalFiles {
+                                self.callCompletionAPI(postId: postId, callbackId: command.callbackId)
+                            }
+                        } else {
+                            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Failed to upload file: \(fileName)"), callbackId: command.callbackId)
+                            return
+                        }
                     }
                 }
             }
@@ -171,7 +187,7 @@ import MobileCoreServices
 
         task.resume()
     }
-    
+
     func processFile(file: [String: Any], completion: @escaping (Data?) -> Void) {
         guard let mimeType = file["filemime"] as? String else {
             completion(nil)
@@ -190,18 +206,8 @@ import MobileCoreServices
             
             let videoFilePath = "https://arabicschool.blob.core.windows.net/arabicschool" + (file["destination"] as? String ?? "")
             extractThumbnail(from: fileData) { thumbnailData in
-                if let thumbnailData = thumbnailData {
-                    let thumbnailFilePath = videoFilePath.replacingOccurrences(of: "video", with: "thumbnail").replacingOccurrences(of: ".mp4", with: ".webp")
-                    self.uploadChunked(filePath: thumbnailFilePath, fileBinary: thumbnailData, sasToken: "", fileIndex: 0, totalFiles: 0, fileMime: "image/webp", originalName: "", postId: "") { success in
-                        if success {
-                            completion(fileData)
-                        } else {
-                            completion(nil)
-                        }
-                    }
-                } else {
-                    completion(nil)
-                }
+                // Assuming the video thumbnail is not required to be in WebP
+                completion(thumbnailData)
             }
         } else if mimeType.starts(with: "image") {
             // Process image file
@@ -214,52 +220,36 @@ import MobileCoreServices
                 return
             }
             
-            if let compressedImageData = compressAndConvertImage(image) {
-                completion(compressedImageData)
+            if let jpegData = convertImageToJPEG(image) {
+                completion(jpegData)
             } else {
                 completion(nil)
             }
         } else {
+            // Handle other file types if needed
             completion(Data(base64Encoded: file["filebinary"] as! String))
         }
     }
+
+    func convertImageToJPEG(_ image: UIImage, quality: CGFloat = 0.7) -> Data? {
+        // Convert the UIImage to JPEG format with the specified compression quality
+        return image.jpegData(compressionQuality: quality)
+    }
     
     func extractThumbnail(from videoData: Data, completion: @escaping (Data?) -> Void) {
-        let tempFileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
-        
-        do {
-            try videoData.write(to: tempFileURL)
-            
-            let asset = AVAsset(url: tempFileURL)
-            let assetImageGenerator = AVAssetImageGenerator(asset: asset)
-            assetImageGenerator.appliesPreferredTrackTransform = true
-            
-            assetImageGenerator.copyCGImage(at: CMTime(seconds: 1, preferredTimescale: 600), actualTime: nil) { cgImage, _ in
-                if let cgImage = cgImage {
-                    let image = UIImage(cgImage: cgImage)
-                    if let webpData = self.convertImageToWebP(image) {
-                        completion(webpData)
-                    } else {
-                        completion(nil)
-                    }
-                } else {
-                    completion(nil)
-                }
+        let asset = AVAsset(data: videoData)
+        let imageGenerator = AVAssetImageGenerator(asset: asset)
+        imageGenerator.appliesPreferredTrackTransform = true
+
+        let time = CMTime(seconds: 1, preferredTimescale: 600)
+        imageGenerator.copyCGImage(at: time, actualTime: nil) { (cgImage, error) in
+            if let cgImage = cgImage {
+                let image = UIImage(cgImage: cgImage)
+                let jpegData = self.convertImageToJPEG(image)
+                completion(jpegData)
+            } else {
+                completion(nil)
             }
-        } catch {
-            completion(nil)
         }
-    }
-    
-    func convertImageToWebP(_ image: UIImage) -> Data? {
-        // Placeholder for WebP conversion
-        return nil
-    }
-    
-    func compressAndConvertImage(_ image: UIImage) -> Data? {
-        guard let compressedImage = image.jpegData(compressionQuality: 0.7) else {
-            return nil
-        }
-        return convertImageToWebP(UIImage(data: compressedImage)!)
     }
 }
