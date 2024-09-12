@@ -84,18 +84,30 @@ public class AzureUpload extends CordovaPlugin {
             int totalSize = fileBinary.length;
             int numChunks = (int) Math.ceil((double) totalSize / chunkSize);
 
+            String blockIdBase = UUID.randomUUID().toString().replace("-", "");
+            StringBuilder blockList = new StringBuilder();
+
             for (int i = 0; i < numChunks; i++) {
                 int start = i * chunkSize;
                 int end = Math.min(start + chunkSize, totalSize);
                 byte[] chunk = new byte[end - start];
                 System.arraycopy(fileBinary, start, chunk, 0, chunk.length);
 
-                boolean uploadSuccess = uploadChunk(filePath, chunk, sasToken);
+                String blockId = String.format("%05d", i);
+                blockList.append("<Block>").append(Base64.encodeToString(blockId.getBytes(), Base64.NO_WRAP)).append("</Block>");
+
+                boolean uploadSuccess = uploadBlock(filePath, chunk, sasToken, blockId);
                 if (!uploadSuccess) {
                     return false;
                 }
             }
 
+            boolean commitSuccess = commitBlockList(filePath, sasToken, blockList.toString());
+            if (!commitSuccess) {
+                return false;
+            }
+
+            // Once the file is successfully uploaded, commit it to the database
             return commitUpload(postId, fileMime, originalName, filePath);
         } catch (Exception e) {
             Log.e(TAG, "Upload Chunked Error: " + e.getMessage());
@@ -103,10 +115,10 @@ public class AzureUpload extends CordovaPlugin {
         }
     }
 
-    private boolean uploadChunk(String filePath, byte[] chunk, String sasToken) {
+    private boolean uploadBlock(String filePath, byte[] chunk, String sasToken, String blockId) {
         try {
             String encodedSasToken = URLEncoder.encode(sasToken, "UTF-8");
-            URL url = new URL(filePath + "?sv=" + encodedSasToken);
+            URL url = new URL(filePath + "?comp=block&blockid=" + Base64.encodeToString(blockId.getBytes(), Base64.NO_WRAP) + "&sv=" + encodedSasToken);
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("PUT");
             connection.setRequestProperty("x-ms-blob-type", "BlockBlob");
@@ -123,35 +135,69 @@ public class AzureUpload extends CordovaPlugin {
             }
             return true;
         } catch (Exception e) {
-            Log.e(TAG, "Upload Chunk Error: " + e.getMessage());
+            Log.e(TAG, "Upload Block Error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean commitBlockList(String filePath, String sasToken, String blockListXml) {
+        try {
+            String encodedSasToken = URLEncoder.encode(sasToken, "UTF-8");
+            URL url = new URL(filePath + "?comp=blocklist&sv=" + encodedSasToken);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("PUT");
+            connection.setRequestProperty("Content-Type", "application/xml");
+            connection.setDoOutput(true);
+
+            try (OutputStream outputStream = connection.getOutputStream()) {
+                outputStream.write(blockListXml.getBytes());
+            }
+
+            int responseCode = connection.getResponseCode();
+            if (responseCode != HttpURLConnection.HTTP_CREATED) {
+                logErrorResponse(connection);
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "Commit Block List Error: " + e.getMessage());
             return false;
         }
     }
 
     private boolean commitUpload(String postId, String fileMime, String originalName, String fileUri) {
         try {
+            // Create the URL for the API endpoint, with the postId as a parameter
             URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/uploads/rest/a/commit?postid=" + URLEncoder.encode(postId, "UTF-8"));
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            
+            // Configure the HTTP request (POST)
             connection.setRequestMethod("POST");
             connection.setRequestProperty("Content-Type", "application/json");
             connection.setDoOutput(true);
 
+            // Create the JSON object to send in the request body
             JSONObject json = new JSONObject();
             json.put("filemime", fileMime);
             json.put("originalname", originalName);
             json.put("URI", fileUri);
 
+            // Send the JSON data in the request body
             try (OutputStream outputStream = connection.getOutputStream()) {
                 outputStream.write(json.toString().getBytes());
             }
 
+            // Get the response code and check if it was successful
             int responseCode = connection.getResponseCode();
             if (responseCode != HttpURLConnection.HTTP_OK) {
+                // If the response was not HTTP OK, log the error response
                 logErrorResponse(connection);
                 return false;
             }
-            return true;
+
+            return true; // Return true if the API call was successful
         } catch (Exception e) {
+            // Log the error and return false in case of an exception
             Log.e(TAG, "Commit Upload Error: " + e.getMessage());
             return false;
         }
@@ -189,7 +235,7 @@ public class AzureUpload extends CordovaPlugin {
                 Log.e(TAG, "Error Response: " + errorResponse.toString());
             }
         } catch (Exception e) {
-            Log.e(TAG, "Error Reading Error Response: " + e.getMessage());
+            Log.e(TAG, "Error Logging Response: " + e.getMessage());
         }
     }
 }
