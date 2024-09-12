@@ -7,7 +7,7 @@ import MobileCoreServices
 
 @objc(AzureUpload) class AzureUpload: CDVPlugin {
 
-    @objc(uploadFiles:command:)
+    @objc(uploadFiles:)
     func uploadFiles(command: CDVInvokedUrlCommand) {
         guard
             let fileList = command.arguments[0] as? [[String: Any]],
@@ -47,37 +47,67 @@ import MobileCoreServices
                     return
                 }
 
-                // Process the file and update the metadata if necessary
-                self.processFile(file: [
-                    "destination": destination,
-                    "filename": fileName,
-                    "originalname": originalName,
-                    "filemime": fileMime,
-                    "filebinary": fileBinaryString
-                ]) { processedData in
-                    guard let processedData = processedData else {
-                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Failed to process file"), callbackId: command.callbackId)
-                        return
-                    }
+                let filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination
 
-                    let filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination
-                    let updatedFileName = (fileName as NSString).deletingPathExtension + ".jpeg"
-                    let updatedOriginalName = (originalName as NSString).deletingPathExtension + ".jpeg"
-
-                    self.uploadChunked(filePath: filePath, fileBinary: processedData, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, fileMime: "image/jpeg", originalName: updatedOriginalName, postId: postId, command: command) { success in
-                        if success {
-                            filesUploaded += 1
-                            // Check if all files have been uploaded
-                            if filesUploaded == totalFiles {
-                                self.callCompletionAPI(postId: postId, callbackId: command.callbackId)
-                            }
-                        } else {
-                            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Failed to upload file: \(fileName)"), callbackId: command.callbackId)
-                            return
+                self.processFile(file: file, filePath: filePath, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, command: command) { success in
+                    if success {
+                        filesUploaded += 1
+                        // Check if all files have been uploaded
+                        if filesUploaded == totalFiles {
+                            self.callCompletionAPI(postId: postId, callbackId: command.callbackId)
                         }
+                    } else {
+                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Failed to upload file: \(fileName)"), callbackId: command.callbackId)
+                        return
                     }
                 }
             }
+        }
+    }
+
+    func processFile(file: [String: Any], filePath: String, sasToken: String, fileIndex: Int, totalFiles: Int, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) {
+        guard let mimeType = file["filemime"] as? String else {
+            completion(false)
+            return
+        }
+        
+        if mimeType.starts(with: "video") {
+            // Process video file
+            guard
+                let fileBinary = file["filebinary"] as? String,
+                let fileData = Data(base64Encoded: fileBinary)
+            else {
+                completion(false)
+                return
+            }
+            
+            extractThumbnail(from: fileData) { thumbnailData in
+                if let thumbnailData = thumbnailData {
+                    let thumbnailFilePath = filePath.replacingOccurrences(of: "video", with: "thumbnail").replacingOccurrences(of: ".mp4", with: ".jpg")
+                    self.uploadChunked(filePath: thumbnailFilePath, fileBinary: thumbnailData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: "image/jpeg", originalName: "", postId: "", command: command) { success in
+                        if success {
+                            self.uploadChunked(filePath: filePath, fileBinary: fileData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: mimeType, originalName: "", postId: "", command: command, completion: completion)
+                        } else {
+                            completion(false)
+                        }
+                    }
+                } else {
+                    self.uploadChunked(filePath: filePath, fileBinary: fileData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: mimeType, originalName: "", postId: "", command: command, completion: completion)
+                }
+            }
+        } else if mimeType.starts(with: "application/pdf") {
+            // Process PDF file
+            guard
+                let fileBinary = file["filebinary"] as? String,
+                let fileData = Data(base64Encoded: fileBinary)
+            else {
+                completion(false)
+                return
+            }
+            
+            self.uploadChunked(filePath: filePath, fileBinary: fileData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: mimeType, originalName: "", postId: "", command: command, completion: completion)
+        } else {
+            completion(false)
         }
     }
 
@@ -172,84 +202,49 @@ import MobileCoreServices
         task.resume()
     }
 
+    func extractThumbnail(from videoData: Data, completion: @escaping (Data?) -> Void) {
+        let tempFileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+
+        do {
+            try videoData.write(to: tempFileURL)
+        } catch {
+            completion(nil)
+            return
+        }
+
+        let asset = AVAsset(url: tempFileURL)
+        let imageGenerator = AVAssetImageGenerator(asset: asset)
+        imageGenerator.appliesPreferredTrackTransform = true
+
+        let thumbnailTime = CMTime(seconds: 1, preferredTimescale: 600)
+        imageGenerator.generateCGImagesAsynchronously(forTimes: [NSValue(time: thumbnailTime)]) { _, image, _, result, _ in
+            if result == .succeeded, let image = image {
+                let imageData = self.compressImage(UIImage(cgImage: image))
+                completion(imageData)
+            } else {
+                completion(nil)
+            }
+        }
+    }
+
+    func compressImage(_ image: UIImage) -> Data? {
+        return image.jpegData(compressionQuality: 0.8)
+    }
+
     func callCompletionAPI(postId: String, callbackId: String) {
-        let url = URL(string: "https://personal-fjlz3d21.outsystemscloud.com/arabicschooln/rest/post/completed?id=" + postId)!
+        let url = URL(string: "https://personal-fjlz3d21.outsystemscloud.com/uploads/rest/a/complete?postid=" + postId)!
         var request = URLRequest(url: url)
-        request.httpMethod = "GET"
+        request.httpMethod = "POST"
 
         let task = URLSession.shared.dataTask(with: request) { (_, response, error) in
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: "All files uploaded and completion API called successfully."), callbackId: callbackId)
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: "Upload complete"), callbackId: callbackId)
             } else {
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Completion API call failed with response code: \(String(describing: (response as? HTTPURLResponse)?.statusCode))"), callbackId: callbackId)
+                print("Failed to complete upload: \(String(describing: error))")
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Failed to complete upload"), callbackId: callbackId)
             }
         }
 
         task.resume()
-    }
-
-    func processFile(file: [String: Any], completion: @escaping (Data?) -> Void) {
-        guard let mimeType = file["filemime"] as? String else {
-            completion(nil)
-            return
-        }
-        
-        if mimeType.starts(with: "video") {
-            // Process video file
-            guard
-                let fileBinary = file["filebinary"] as? String,
-                let fileData = Data(base64Encoded: fileBinary)
-            else {
-                completion(nil)
-                return
-            }
-            
-            let videoFilePath = "https://arabicschool.blob.core.windows.net/arabicschool" + (file["destination"] as? String ?? "")
-            extractThumbnail(from: fileData) { thumbnailData in
-                // Assuming the video thumbnail is not required to be in WebP
-                completion(thumbnailData)
-            }
-        } else if mimeType.starts(with: "image") {
-            // Process image file
-            guard
-                let fileBinary = file["filebinary"] as? String,
-                let fileData = Data(base64Encoded: fileBinary),
-                let image = UIImage(data: fileData)
-            else {
-                completion(nil)
-                return
-            }
-            
-            if let jpegData = convertImageToJPEG(image) {
-                completion(jpegData)
-            } else {
-                completion(nil)
-            }
-        } else {
-            // Handle other file types if needed
-            completion(Data(base64Encoded: file["filebinary"] as! String))
-        }
-    }
-
-    func convertImageToJPEG(_ image: UIImage, quality: CGFloat = 0.7) -> Data? {
-        // Convert the UIImage to JPEG format with the specified compression quality
-        return image.jpegData(compressionQuality: quality)
-    }
-    
-    func extractThumbnail(from videoData: Data, completion: @escaping (Data?) -> Void) {
-        let asset = AVAsset(data: videoData)
-        let imageGenerator = AVAssetImageGenerator(asset: asset)
-        imageGenerator.appliesPreferredTrackTransform = true
-
-        let time = CMTime(seconds: 1, preferredTimescale: 600)
-        imageGenerator.copyCGImage(at: time, actualTime: nil) { (cgImage, error) in
-            if let cgImage = cgImage {
-                let image = UIImage(cgImage: cgImage)
-                let jpegData = self.convertImageToJPEG(image)
-                completion(jpegData)
-            } else {
-                completion(nil)
-            }
-        }
     }
 }
