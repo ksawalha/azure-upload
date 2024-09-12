@@ -5,7 +5,7 @@
   <license>Apache 2.0</license>
   <keywords>cordova, azure, upload, file, blob</keywords>
 
-  <!-- JavaScript Module -->
+
   <js-module src="www/AzureUpload.js" name="AzureUpload">
     <clobbers target="AzureUpload" />
   </js-module>
@@ -16,12 +16,6 @@
     <config-file target="AndroidManifest.xml" parent="manifest">
       <uses-permission android:name="android.permission.INTERNET" />
       <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-      <!-- Add any additional permissions or configurations here -->
-    </config-file>
-    <config-file target="build.gradle" parent="android">
-      <property name="compileSdkVersion" value="30" />
-      <property name="buildToolsVersion" value="30.0.3" />
-      <!-- Add any additional Gradle properties here -->
     </config-file>
   </platform>
 
@@ -38,7 +32,6 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
       </dict>
-      <!-- Add any additional settings here -->
     </config-file>
   </platform>
 </plugin>
