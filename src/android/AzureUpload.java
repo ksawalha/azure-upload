@@ -1,5 +1,8 @@
 package com.azure.upload;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.media.MediaMetadataRetriever;
 import android.util.Base64;
 import android.util.Log;
 import android.app.Notification;
@@ -18,6 +21,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -70,7 +74,20 @@ public class AzureUpload extends CordovaPlugin {
                     byte[] fileData = Base64.decode(fileBinary, Base64.DEFAULT);
                     String filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination;
 
-                    boolean success = uploadChunked(filePath, fileData, sasToken, originalName, fileMime, originalName, postId);
+                    // Handle video thumbnails
+                    if (fileMime.startsWith("video/")) {
+                        byte[] thumbnailData = getVideoThumbnail(fileData);
+                        if (thumbnailData != null) {
+                            String thumbnailPath = destination.replace(".mp4", "/thumbnail.jpg");
+                            boolean thumbnailUploadSuccess = uploadChunked(thumbnailPath, thumbnailData, sasToken, "image/jpeg", "thumbnail.jpg", postId);
+                            if (!thumbnailUploadSuccess) {
+                                callbackContext.error("Failed to upload thumbnail for file: " + originalName);
+                                return;
+                            }
+                        }
+                    }
+
+                    boolean success = uploadChunked(filePath, fileData, sasToken, fileMime, originalName, postId);
                     if (success) {
                         filesUploaded++;
                         updateNotification(filesUploaded, totalFiles);  // Update notification progress
@@ -90,7 +107,24 @@ public class AzureUpload extends CordovaPlugin {
         });
     }
 
-    private boolean uploadChunked(String filePath, byte[] fileBinary, String sasToken, String originalName, String fileMime, String originalNameForLogging, String postId) {
+    private byte[] getVideoThumbnail(byte[] videoData) {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        ByteArrayInputStream inputStream = new ByteArrayInputStream(videoData);
+        retriever.setDataSource(inputStream.getFD());
+
+        // Retrieve a frame from the video at the 1-second mark
+        Bitmap bitmap = retriever.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+        retriever.release();
+
+        if (bitmap != null) {
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream);
+            return outputStream.toByteArray();
+        }
+        return null;
+    }
+
+    private boolean uploadChunked(String filePath, byte[] fileBinary, String sasToken, String fileMime, String originalName, String postId) {
         try {
             final int chunkSize = 1024 * 1024; // 1MB chunk size
             int totalSize = fileBinary.length;
@@ -199,89 +233,93 @@ public class AzureUpload extends CordovaPlugin {
                 outputStream.write(json.toString().getBytes());
             }
 
-            // Get the response code and check if it was successful
+            // Get the response code and check if the request was successful
             int responseCode = connection.getResponseCode();
             if (responseCode != HttpURLConnection.HTTP_OK) {
-                // If the response was not HTTP OK, log the error response
                 logErrorResponse(connection);
                 return false;
             }
-
-            return true; // Return true if the API call was successful
+            return true;
         } catch (Exception e) {
-            // Log the error and return false in case of an exception
             Log.e(TAG, "Commit Upload Error: " + e.getMessage());
             return false;
         }
     }
 
-    private void callCompletionAPI(String postId, CallbackContext callbackContext) {
-        cordova.getThreadPool().execute(() -> {
-            try {
-                URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/arabicschooln/rest/post/completed?id=" + URLEncoder.encode(postId, "UTF-8"));
-                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-                connection.setRequestMethod("GET");
-
-                int responseCode = connection.getResponseCode();
-                if (responseCode == HttpURLConnection.HTTP_OK) {
-                    callbackContext.success("All files uploaded and completion API called successfully.");
-                } else {
-                    callbackContext.error("Completion API call failed with response code: " + responseCode);
-                }
-            } catch (Exception e) {
-                callbackContext.error("Completion API Error: " + e.getMessage());
-            }
-        });
-    }
-
     private void logErrorResponse(HttpURLConnection connection) {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getErrorStream()))) {
+        try (InputStream errorStream = connection.getErrorStream();
+             BufferedReader reader = new BufferedReader(new InputStreamReader(errorStream))) {
+            StringBuilder errorResponse = new StringBuilder();
             String line;
-            StringBuilder response = new StringBuilder();
             while ((line = reader.readLine()) != null) {
-                response.append(line);
+                errorResponse.append(line).append("\n");
             }
-            Log.e(TAG, "Error Response: " + response.toString());
+            Log.e(TAG, "Error Response: " + errorResponse.toString());
         } catch (Exception e) {
-            Log.e(TAG, "Error Logging Response: " + e.getMessage());
+            Log.e(TAG, "Error Reading Error Stream: " + e.getMessage());
         }
     }
 
     private void initializeNotification(int totalFiles) {
-        notificationManager = (NotificationManager) cordova.getContext().getSystemService(Context.NOTIFICATION_SERVICE);
+        notificationManager = (NotificationManager) cordova.getActivity().getSystemService(Context.NOTIFICATION_SERVICE);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "File Upload", NotificationManager.IMPORTANCE_LOW);
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Upload Progress", NotificationManager.IMPORTANCE_LOW);
             notificationManager.createNotificationChannel(channel);
         }
 
-        notificationBuilder = new NotificationCompat.Builder(cordova.getContext(), CHANNEL_ID)
-                .setContentTitle("File Upload")
-                .setContentText("Uploading files")
+        notificationBuilder = new NotificationCompat.Builder(cordova.getActivity(), CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_menu_upload)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setProgress(totalFiles, 0, false)
-                .setOngoing(true);
-
+                .setContentTitle("Uploading Files")
+                .setContentText("0/" + totalFiles + " files uploaded")
+                .setProgress(totalFiles, 0, false);
         notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build());
     }
 
     private void updateNotification(int filesUploaded, int totalFiles) {
-        notificationBuilder.setProgress(totalFiles, filesUploaded, false)
-                .setContentText("Uploaded " + filesUploaded + " of " + totalFiles + " files");
-        notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build());
+        if (notificationBuilder != null) {
+            notificationBuilder.setContentText(filesUploaded + "/" + totalFiles + " files uploaded")
+                    .setProgress(totalFiles, filesUploaded, false);
+            notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build());
+        }
     }
 
     private void removeNotification() {
-        notificationManager.cancel(NOTIFICATION_ID);
+        if (notificationManager != null) {
+            notificationManager.cancel(NOTIFICATION_ID);
+        }
     }
 
-    private void showErrorNotification(String errorMessage) {
-        Notification errorNotification = new NotificationCompat.Builder(cordova.getContext(), CHANNEL_ID)
-                .setContentTitle("File Upload Failed")
-                .setContentText(errorMessage)
+    private void showErrorNotification(String message) {
+        NotificationCompat.Builder errorNotificationBuilder = new NotificationCompat.Builder(cordova.getActivity(), CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .build();
-        notificationManager.notify(NOTIFICATION_ID + 1, errorNotification);  // Use a different ID for the error notification
+                .setContentTitle("Upload Error")
+                .setContentText(message)
+                .setPriority(NotificationCompat.PRIORITY_HIGH);
+        notificationManager.notify(NOTIFICATION_ID, errorNotificationBuilder.build());
+    }
+
+    private void callCompletionAPI(String postId, CallbackContext callbackContext) {
+        try {
+            URL url = new URL("https://personal-fjlz3d21.outsystemscloud.com/uploads/rest/a/complete?postid=" + URLEncoder.encode(postId, "UTF-8"));
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setDoOutput(true);
+
+            // No body needed for the completion request
+            try (OutputStream outputStream = connection.getOutputStream()) {
+                // No data to send in the body
+            }
+
+            int responseCode = connection.getResponseCode();
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                callbackContext.success("Upload completed successfully.");
+            } else {
+                callbackContext.error("Error completing upload. Response code: " + responseCode);
+            }
+        } catch (Exception e) {
+            callbackContext.error("Completion Error: " + e.getMessage());
+        }
     }
 }
