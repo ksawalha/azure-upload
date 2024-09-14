@@ -40,16 +40,15 @@ import MobileCoreServices
                     let fileName = file["filename"] as? String,
                     let originalName = file["originalname"] as? String,
                     let fileMime = file["filemime"] as? String,
-                    let fileBinaryString = file["filebinary"] as? String,
-                    let fileBinary = Data(base64Encoded: fileBinaryString)
+                    let filePath = file["filepath"] as? String // Changed from fileBinary
                 else {
                     self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Invalid file data"), callbackId: command.callbackId)
                     return
                 }
 
-                let filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination
+                let fileUri = "https://arabicschool.blob.core.windows.net/arabicschool" + destination
 
-                self.processFile(file: file, filePath: filePath, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, command: command) { success in
+                self.processFile(file: file, filePath: fileUri, localFilePath: filePath, sasToken: sasToken, fileIndex: index + 1, totalFiles: totalFiles, command: command) { success in
                     if success {
                         filesUploaded += 1
                         // Check if all files have been uploaded
@@ -65,7 +64,7 @@ import MobileCoreServices
         }
     }
 
-    func processFile(file: [String: Any], filePath: String, sasToken: String, fileIndex: Int, totalFiles: Int, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) {
+    func processFile(file: [String: Any], filePath: String, localFilePath: String, sasToken: String, fileIndex: Int, totalFiles: Int, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) {
         guard let mimeType = file["filemime"] as? String else {
             completion(false)
             return
@@ -73,44 +72,38 @@ import MobileCoreServices
         
         if mimeType.starts(with: "video") {
             // Process video file
-            guard
-                let fileBinary = file["filebinary"] as? String,
-                let fileData = Data(base64Encoded: fileBinary)
-            else {
-                completion(false)
-                return
-            }
-            
-            extractThumbnail(from: fileData) { thumbnailData in
-                if let thumbnailData = thumbnailData {
-                    let thumbnailFilePath = filePath.replacingOccurrences(of: "video", with: "thumbnail").replacingOccurrences(of: ".mp4", with: ".jpg")
-                    self.uploadChunked(filePath: thumbnailFilePath, fileBinary: thumbnailData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: "image/jpeg", originalName: "", postId: "", command: command) { success in
-                        if success {
-                            self.uploadChunked(filePath: filePath, fileBinary: fileData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: mimeType, originalName: "", postId: "", command: command, completion: completion)
-                        } else {
-                            completion(false)
+            do {
+                let fileData = try Data(contentsOf: URL(fileURLWithPath: localFilePath)) // Changed from base64 decoding
+                extractThumbnail(from: fileData) { thumbnailData in
+                    if let thumbnailData = thumbnailData {
+                        let thumbnailFilePath = filePath.replacingOccurrences(of: "video", with: "thumbnail").replacingOccurrences(of: ".mp4", with: ".jpg")
+                        self.uploadChunked(filePath: thumbnailFilePath, fileBinary: thumbnailData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: "image/jpeg", originalName: "", postId: "", command: command) { success in
+                            if success {
+                                self.uploadChunked(filePath: filePath, fileBinary: fileData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: mimeType, originalName: "", postId: "", command: command, completion: completion)
+                            } else {
+                                completion(false)
+                            }
                         }
+                    } else {
+                        self.uploadChunked(filePath: filePath, fileBinary: fileData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: mimeType, originalName: "", postId: "", command: command, completion: completion)
                     }
-                } else {
-                    self.uploadChunked(filePath: filePath, fileBinary: fileData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: mimeType, originalName: "", postId: "", command: command, completion: completion)
                 }
+            } catch {
+                completion(false)
             }
         } else if mimeType.starts(with: "application/pdf") {
             // Process PDF file
-            guard
-                let fileBinary = file["filebinary"] as? String,
-                let fileData = Data(base64Encoded: fileBinary)
-            else {
+            do {
+                let fileData = try Data(contentsOf: URL(fileURLWithPath: localFilePath)) // Changed from base64 decoding
+                self.uploadChunked(filePath: filePath, fileBinary: fileData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: mimeType, originalName: "", postId: "", command: command, completion: completion)
+            } catch {
                 completion(false)
-                return
             }
-            
-            self.uploadChunked(filePath: filePath, fileBinary: fileData, sasToken: sasToken, fileIndex: fileIndex, totalFiles: totalFiles, fileMime: mimeType, originalName: "", postId: "", command: command, completion: completion)
         } else {
             completion(false)
         }
     }
-
+    
     func uploadChunked(filePath: String, fileBinary: Data, sasToken: String, fileIndex: Int, totalFiles: Int, fileMime: String, originalName: String, postId: String, command: CDVInvokedUrlCommand, completion: @escaping (Bool) -> Void) {
         let chunkSize = 1024 * 1024 // 1MB chunk size
         let totalSize = fileBinary.count
