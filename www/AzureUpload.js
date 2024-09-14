@@ -1,17 +1,14 @@
-var azureUpload = {
-    uploadFiles: function (filesList, sasToken, postId, successCallback, errorCallback) {
-        if (!filesList || !sasToken || !postId) {
-            return errorCallback('Invalid arguments. Expected filesList, sasToken, and postId.');
+var exec = require('cordova/exec');
+
+var AzureUpload = {
+    uploadFiles: function (fileList, sasToken, postId, successCallback, errorCallback) {
+        // Convert fileList to JSON if needed
+        if (typeof fileList !== 'string') {
+            fileList = JSON.stringify(fileList);
         }
 
-        cordova.exec(
-            successCallback,     // Success callback
-            errorCallback,       // Error callback
-            'AzureUpload',       // Plugin class name (Java class in native code)
-            'uploadFiles',       // Action name (the method to call in Java)
-            [filesList, sasToken, postId] // Arguments passed to the native code
-        );
+        exec(successCallback, errorCallback, 'AzureUpload', 'uploadFiles', [fileList, sasToken, postId]);
     }
 };
 
-module.exports = azureUpload;
+module.exports = AzureUpload;
