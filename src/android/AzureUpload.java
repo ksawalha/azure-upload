@@ -22,6 +22,7 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -64,15 +65,16 @@ public class AzureUpload extends CordovaPlugin {
                     String destination = file.getString("destination");
                     String originalName = file.getString("originalname");
                     String fileMime = file.getString("filemime");
-                    String fileBinary = file.getString("filebinary");
+                    String filePath = file.getString("filepath");  // Changed to get file path instead of binary
 
                     // Debugging output
                     Log.d(TAG, "Destination: " + destination);
                     Log.d(TAG, "Original Name: " + originalName);
                     Log.d(TAG, "File MIME: " + fileMime);
-                    Log.d(TAG, "File Binary Length: " + fileBinary.length());
+                    Log.d(TAG, "File Path: " + filePath);  // Log the file path for debugging
 
-                    byte[] fileData = Base64.decode(fileBinary, Base64.DEFAULT);
+                    // Read the file data from the file path
+                    byte[] fileData = readFileFromPath(filePath);
 
                     // Handle image compression if needed
                     if (fileMime.startsWith("image/")) {
@@ -85,9 +87,9 @@ public class AzureUpload extends CordovaPlugin {
                         fileMime = "image/jpeg";
                     }
 
-                    String filePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination;
+                    String fullFilePath = "https://arabicschool.blob.core.windows.net/arabicschool" + destination;
 
-                    boolean success = uploadChunked(filePath, fileData, sasToken, originalName, fileMime, originalName, postId);
+                    boolean success = uploadChunked(fullFilePath, fileData, sasToken, originalName, fileMime, originalName, postId);
                     if (success) {
                         filesUploaded++;
                         updateNotification(filesUploaded, totalFiles);  // Update notification progress
@@ -105,6 +107,26 @@ public class AzureUpload extends CordovaPlugin {
                 callbackContext.error("JSON Error: " + e.getMessage());
             }
         });
+    }
+
+    private byte[] readFileFromPath(String filePath) {
+        try {
+            File file = new File(filePath);
+            FileInputStream fileInputStream = new FileInputStream(file);
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+
+            byte[] buffer = new byte[1024];
+            int bytesRead;
+            while ((bytesRead = fileInputStream.read(buffer)) != -1) {
+                byteArrayOutputStream.write(buffer, 0, bytesRead);
+            }
+
+            fileInputStream.close();
+            return byteArrayOutputStream.toByteArray();
+        } catch (Exception e) {
+            Log.e(TAG, "File Read Error: " + e.getMessage());
+            return new byte[0]; // Return an empty array if file reading fails
+        }
     }
 
     private byte[] compressImage(byte[] imageData) {
